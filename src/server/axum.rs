@@ -483,6 +483,7 @@ mod tests {
                         method: crate::protocol::core::MethodName::new("tempo"),
                         timestamp: "2025-01-01T00:00:00Z".into(),
                         reference: "0xabc".into(),
+                        external_id: None,
                     })
                 } else {
                     Err("payment rejected".into())
@@ -578,6 +579,7 @@ mod tests {
             method: MethodName::new("tempo"),
             timestamp: "2025-01-01T00:00:00Z".into(),
             reference: "0xabc".into(),
+            external_id: None,
         };
 
         let resp = WithReceipt {
