@@ -448,6 +448,36 @@ pub struct ChargeMethod<P> {
     fee_payer_signer: Option<Arc<alloy::signers::local::PrivateKeySigner>>,
     store: Option<Arc<dyn Store>>,
     cached_chain_id: Arc<OnceCell<u64>>,
+    fee_payer_policy_override: Option<FeePayerPolicyOverride>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FeePayerPolicy {
+    pub max_gas: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FeePayerPolicyOverride {
+    pub max_gas: Option<u64>,
+}
+
+impl Default for FeePayerPolicy {
+    fn default() -> FeePayerPolicy {
+        FeePayerPolicy {
+            max_gas: MAX_FEE_PAYER_GAS_LIMIT,
+        }
+    }
+}
+
+impl FeePayerPolicy {
+    /// Merge overrides onto the per-chain default.
+    pub fn resolve(_chain_id: u64, overrides: Option<&FeePayerPolicyOverride>) -> Self {
+        let base = Self::default();
+        let Some(o) = overrides else { return base };
+        Self {
+            max_gas: o.max_gas.unwrap_or(base.max_gas),
+        }
+    }
 }
 
 impl<P> ChargeMethod<P>
@@ -464,7 +494,14 @@ where
             fee_payer_signer: None,
             store: None,
             cached_chain_id: Arc::new(OnceCell::new()),
+            fee_payer_policy_override: None,
         }
+    }
+
+    // Configure fee payer
+    pub fn with_fee_payer_policy_override(mut self, overrides: FeePayerPolicyOverride) -> Self {
+        self.fee_payer_policy_override = Some(overrides);
+        self
     }
 
     /// Configure a store for transaction hash deduplication.
@@ -625,10 +662,13 @@ where
             )));
         }
 
-        if require_exact_calls && tx.gas_limit > MAX_FEE_PAYER_GAS_LIMIT {
+        let policy =
+            FeePayerPolicy::resolve(expected_chain_id, self.fee_payer_policy_override.as_ref());
+
+        if require_exact_calls && tx.gas_limit > policy.max_gas {
             return Err(VerificationError::new(format!(
                 "Fee-sponsored transaction gas limit {} exceeds maximum {}",
-                tx.gas_limit, MAX_FEE_PAYER_GAS_LIMIT
+                tx.gas_limit, policy.max_gas
             )));
         }
 
@@ -983,6 +1023,7 @@ where
         let fee_payer_signer = self.fee_payer_signer.clone();
         let store = self.store.clone();
         let cached_chain_id = Arc::clone(&self.cached_chain_id);
+        let fee_payer_policy_override = self.fee_payer_policy_override.clone();
 
         async move {
             let this = ChargeMethod {
@@ -990,6 +1031,7 @@ where
                 fee_payer_signer,
                 store,
                 cached_chain_id,
+                fee_payer_policy_override,
             };
 
             if credential.challenge.method.as_str() != METHOD_NAME {
@@ -1939,20 +1981,66 @@ mod tests {
             memo: None,
         }];
 
-        let tx_bytes = encode_signed_tx(
-            vec![tempo_primitives::transaction::Call {
-                to: TxKind::Call(currency),
-                value: U256::ZERO,
-                input: make_transfer_input(recipient, U256::from(100u64)),
-            }],
-            MAX_FEE_PAYER_GAS_LIMIT + 1,
-        );
+        let calls = vec![tempo_primitives::transaction::Call {
+            to: TxKind::Call(currency),
+            value: U256::ZERO,
+            input: make_transfer_input(recipient, U256::from(100u64)),
+        }];
+
+        let tx_bytes = encode_signed_tx(calls.clone(), MAX_FEE_PAYER_GAS_LIMIT + 1);
 
         let error = method
             .validate_transaction_transfers(&tx_bytes, currency, &expected, CHAIN_ID, true)
             .unwrap_err();
 
         assert!(error.to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn test_policy_override_adjusts_fee_payer_gas_limit() {
+        let provider =
+            alloy::providers::ProviderBuilder::new_with_network::<tempo_alloy::TempoNetwork>()
+                .connect_http("http://127.0.0.1:1".parse().unwrap());
+        let method = ChargeMethod::new(provider);
+
+        let currency = Address::repeat_byte(0x20);
+        let recipient = Address::repeat_byte(0x33);
+        let expected = vec![Transfer {
+            amount: U256::from(100u64),
+            recipient,
+            memo: None,
+        }];
+
+        let calls = vec![tempo_primitives::transaction::Call {
+            to: TxKind::Call(currency),
+            value: U256::ZERO,
+            input: make_transfer_input(recipient, U256::from(100u64)),
+        }];
+
+        // with custom gas limit lower than default
+        let max_gas = 500_000;
+        let tx_bytes = encode_signed_tx(calls.clone(), max_gas + 1);
+        let overrides = FeePayerPolicyOverride {
+            max_gas: Some(max_gas),
+        };
+        let method = method.with_fee_payer_policy_override(overrides);
+        let error = method
+            .validate_transaction_transfers(&tx_bytes, currency, &expected, CHAIN_ID, true)
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains(&format!("exceeds maximum {}", max_gas)));
+
+        // Override raises ceiling; tx between default (1M) and override (2M) should now pass.
+        let tx_bytes = encode_signed_tx(calls, 1_500_000);
+        let overrides = FeePayerPolicyOverride {
+            max_gas: Some(2_000_000),
+        };
+        let result = method
+            .with_fee_payer_policy_override(overrides)
+            .validate_transaction_transfers(&tx_bytes, currency, &expected, CHAIN_ID, true);
+        assert!(result.is_ok());
     }
 
     /// cosign_fee_payer_transaction rejects txs with wrong nonce_key.
