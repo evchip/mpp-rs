@@ -48,7 +48,7 @@ const MAX_FEE_PAYER_GAS_LIMIT: u64 = 2_000_000;
 const MAX_FEE_PER_GAS_DEFAULT: u128 = 100_000_000_000;
 const MAX_PRIORITY_FEE_PER_GAS_DEFAULT: u128 = 10_000_000_000;
 const MAX_VALIDITY_WINDOW_SECS_DEFAULT: u64 = 15 * 60;
-const MAX_TOTAL_FEE_DEFAULT: u128 = 50_000_000_000_000_000; // 0.05 ETH — lower than max_gas * max_fee_per_gas
+const MAX_TOTAL_FEE_DEFAULT: u128 = 50_000_000_000_000_000; // lower than max_gas * max_fee_per_gas
 
 /// TIP-20 Transfer event topic: keccak256("Transfer(address,address,uint256)")
 /// TIP-20 is Tempo's token standard (compatible with ERC-20 Transfer events).
